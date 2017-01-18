@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 
 import com.oneops.cms.cm.domain.CmsAltNs;
 import com.oneops.cms.dj.domain.*;
+import com.oneops.cms.ns.service.CmsNsProcessor;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.log4j.Logger;
 import org.springframework.beans.BeanUtils;
@@ -39,7 +40,6 @@ import com.oneops.cms.cm.domain.CmsCIRelationAttribute;
 import com.oneops.cms.dj.dal.DJMapper;
 import com.oneops.cms.exceptions.DJException;
 import com.oneops.cms.ns.domain.CmsNamespace;
-import com.oneops.cms.ns.service.CmsNsManager;
 import com.oneops.cms.util.CIValidationResult;
 import com.oneops.cms.util.CmsConstants;
 import com.oneops.cms.util.CmsDJValidator;
@@ -60,7 +60,7 @@ public class CmsRfcProcessor {
     private static Pattern rfcNamePattern = Pattern.compile(RFCNAMEREGEX);	
     private static final int CHUNK_SIZE = 100;
 	private DJMapper djMapper;
-	private CmsNsManager nsManager;
+	private CmsNsProcessor cmsNsProcessor;
 	private CmsDJValidator djValidator;
 	private CIMapper ciMapper;
 	private CmsRfcUtil rfcUtil;
@@ -84,13 +84,9 @@ public class CmsRfcProcessor {
 		this.djMapper = djMapper;
 	}
 
-	/**
-	 * Sets the ns manager.
-	 *
-	 * @param nsManager the new ns manager
-	 */
-	public void setNsManager(CmsNsManager nsManager) {
-		this.nsManager = nsManager;
+
+	public void setCmsNsProcessor(CmsNsProcessor cmsNsProcessor) {
+		this.cmsNsProcessor = cmsNsProcessor;
 	}
 
 	/**
@@ -242,7 +238,7 @@ public class CmsRfcProcessor {
 		long releaseId = djMapper.getNextDjId();
 		release.setReleaseId(releaseId);
 
-		CmsNamespace ns = nsManager.getNs(release.getNsPath());
+		CmsNamespace ns = cmsNsProcessor.getNs(release.getNsPath());
 		if (ns == null) {
 			String err = "Can not resolve name space";
 			logger.error(err);
@@ -1492,7 +1488,8 @@ public class CmsRfcProcessor {
 			logger.error(errorMsg);
 			throw new DJException(CmsError.DJ_RELATION_RFC_DOESNT_EXIST_ERROR, errorMsg);
 		}
-
+		
+		relation.setReleaseId(existingRelation.getReleaseId());
 		relation.setRelationName(existingRelation.getRelationName());
 		
 		CIValidationResult validation = djValidator.validateRfcRelationAttrs(relation);
@@ -1818,6 +1815,8 @@ public class CmsRfcProcessor {
 	private List<TimelineRelease> getReleaseByFilterInternal(TimelineQueryParam queryParam) {
 		List<TimelineRelease> releases = null;
 		addFilters(queryParam);
+		getMatchingNamespaces4Timeline(queryParam);
+
 		releases = djMapper.getReleaseByFilter(queryParam);
 		Long endRelId = null;
 		if (QueryOrder.ASC.equals(queryParam.getOrder())) {
@@ -1834,18 +1833,30 @@ public class CmsRfcProcessor {
 		return releases;
 	}
 
+	private void getMatchingNamespaces4Timeline(TimelineQueryParam queryParam) {
+		List<CmsNamespace> releaseNamespaces = cmsNsProcessor.getNsLike(queryParam.getReleaseNsLike());
+		List<Long> releaseScopeNsIds = new ArrayList<Long>();
+		List<Long> matchedNsIds = new ArrayList<Long>();
+		releaseNamespaces.stream().forEach((namespace) -> {
+			releaseScopeNsIds.add(namespace.getNsId());
+			if (namespace.getNsPath().indexOf(queryParam.getFilter(), queryParam.getNsPath().length()) != -1) {
+				matchedNsIds.add(namespace.getNsId());
+			}
+		});
+		queryParam.setNsIdsMatchingFilter(matchedNsIds);
+		queryParam.setReleaseScopeNsIds(releaseScopeNsIds);
+	}
+
 	private void addFilters(TimelineQueryParam queryParam) {
 		String filter = queryParam.getWildcardFilter();
 		String nsPath = queryParam.getNsPath();
 
 		if (queryParam.isDesignNamespace()) {
 			queryParam.setReleaseNsLike(CmsUtil.likefyNsPath(nsPath));
-			queryParam.setReleaseNsLikeWithFilter(CmsUtil.likefyNsPathWithFilter(nsPath, null, filter));
 			queryParam.setReleaseClassFilter(CmsConstants.CATALOG + "." + filter);
 		}
 		else {
 			queryParam.setReleaseNsLike(CmsUtil.likefyNsPathWithFilter(nsPath, CmsConstants.MANIFEST, null));
-			queryParam.setReleaseNsLikeWithFilter(CmsUtil.likefyNsPathWithFilter(nsPath, CmsConstants.MANIFEST, filter));
 			queryParam.setReleaseClassFilter(CmsConstants.MANIFEST + "." + filter);
 		}
 	}
@@ -1884,14 +1895,14 @@ public class CmsRfcProcessor {
 
 		CmsNamespace ns = null;
 		if (cmsAltNs.getNsId() != 0) {
-			ns = nsManager.getNsById(cmsAltNs.getNsId());
+			ns = cmsNsProcessor.getNsById(cmsAltNs.getNsId());
 		} else {
-			ns = nsManager.getNs(cmsAltNs.getNsPath());
+			ns = cmsNsProcessor.getNs(cmsAltNs.getNsPath());
 		}
 		if (ns ==null){
 			ns = new CmsNamespace();
 			ns.setNsPath(cmsAltNs.getNsPath());
-			ns = nsManager.createNs(ns);
+			ns = cmsNsProcessor.createNs(ns);
 		}
 		djMapper.createAltNs(ns.getNsId(), cmsAltNs.getTag(), rfcCi.getRfcId());
 	}
